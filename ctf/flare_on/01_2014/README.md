@@ -187,7 +187,7 @@ Hash | Value
 -|-
 MD5 | 84d6581b485a8580092a20bc614bb660
 SHA1 | 06ea4adb5c22b46c8751402cd20ffd73ce72dd4b
-SHA256 | e81a25edd426d9cdcefe5ca06d8ddb21e248100e2f1150dea5834f420b64652b 
+SHA256 | e81a25edd426d9cdcefe5ca06d8ddb21e248100e2f1150dea5834f420b64652b
 
 Once extracted, I found a strange file named `such_evil`:
 
@@ -875,6 +875,121 @@ FatalAppExitA(
 ```
 
 So it calls the function `FatalAppExitA` to terminate the program and show the message `BrokenByte`.
+
+One way to complete the challenge and get the flag without reversing the assembly instructions is too perform some memory scanning, for exampleusing `frida`.
+
+Given the *interesting* function at offset `0x40100`, I wrote a script that scans readable memory pages to search for the pattern *flare-on.com*:`
+
+```js
+var flag = false;
+var ranges;
+var range;
+
+function scan_pattern(pattern)
+{
+    range = ranges.pop();
+
+    if(!range){
+        return;
+    }
+
+    Memory.scan(range.base, range.size, pattern, {
+        onMatch: function(address, size){
+            console.log('[+] Pattern found at: ' + address.toString());
+            var buf = Memory.readByteArray(ptr(address - 30), 60);
+            console.log(hexdump(buf, {
+                offset: 0, 
+                length: 60, 
+                header: true,
+                ansi: false
+                }));
+        }, 
+        onError: function(reason)
+        {
+            console.log('[!] There was an error scanning memory');
+            console.log('[!] ' + reason);
+        }, 
+        onComplete: function(){
+            scan_pattern(pattern);
+        }
+        });
+}
+
+function stalk()
+{
+    Process.enumerateThreads().map(t =>
+        {
+        Stalker.follow(t.id,
+            {
+            events: {
+                call: true,
+                block: true,
+                exec: true
+            },
+        
+            onReceive: function(events)
+            {
+                events = Stalker.parse(events);
+                console.log("onReceive");
+            },
+            transform(iterator)
+            {
+                let instruction = iterator.next()
+                do
+                {
+                    if(instruction.mnemonic == "call")
+                    {
+                        console.log("[+] Found CALL " + instruction.opStr)
+
+                        if (instruction.opStr == "0x401000")
+                        {
+                            flag = true
+                        }
+                    }
+                    else if(instruction.mnemonic == "ret" && flag)
+                    {
+                        console.log("[+] Executing RET instruction")
+                        flag = false;
+                    }
+                    
+                    if (flag == true)
+                    {
+                        if (instruction.mnemonic == "xor")
+                        {
+                            ranges = Process.enumerateRangesSync({protection: 'r--'});
+                            scan_pattern("66 6c 61 72 65 2d 6f 6e 2e 63 6f 6d");
+                        }
+                        
+                        // console.log(instruction.address + "\t" + instruction.mnemonic + " " + instruction.opStr);
+                    }
+
+                    iterator.keep()
+                } while ((instruction = iterator.next()) !== null)
+            }
+        });
+    });
+}
+
+stalk()
+```
+
+After that, you can run it like this:
+
+```ps1
+frida -l script.js .\such_evil.exe
+# %resume
+```
+
+In my case, it found the pattern at the address `0x19fe6a`, as shown below:
+
+```hex
+[+] Pattern found at: 0x19fe6a
+           0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F  0123456789ABCDEF
+00000000  8a 13 30 16 43 46 eb eb e9 1d 00 00 00 73 75 63  ..0.CF.......suc
+00000010  68 2e 35 68 33 31 31 30 31 30 31 30 31 40 66 6c  h.5h311010101@fl
+00000020  61 72 65 2d 6f 6e 2e 63 6f 6d 68 6e 74 00 00 68  are-on.comhnt..h
+00000030  20 73 70 65 68 20 69 27 6d 68 61 61               speh i'mhaa
+```
 
 Some references I found very useful for this challenge, in particular for the PEB and its fields:
 
